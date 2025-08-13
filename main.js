@@ -566,9 +566,9 @@ function winLevelSequence(){
   setTimeout(()=>{
     ui.overlayLevel.textContent = String(level);
     ui.overlayTitle.textContent = "Kawaii Congrats!";
-    ui.overlaySub.innerHTML = `Level <span id="overlayLevel">${level}</span> complete`;
+    ui.overlaySub.textContent = `Level ${level} complete`;
     ui.nextLevelBtn.style.display = "inline-block";
-    ui.restartBtn.style.display = "inline-block";
+    ui.restartBtn.style.display = "none";
     ui.overlay.classList.remove("hidden");
   }, 450);
 }
