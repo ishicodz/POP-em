@@ -22,6 +22,7 @@ let scoreTarget = 900;
 let minMatch = 3;
 let activeTypeCount = 4; // starts gentle; rises gradually
 let interactionsLocked = false;
+let pendingMoveCheck = false;
 
 // Rendering helpers
 let animationHandle = 0;
@@ -237,25 +238,24 @@ function findCluster(c, r){
 }
 
 function hasAnyCluster(threshold = minMatch){
-  const seen = new Set();
   for(let r=0;r<GRID_ROWS;r++){
     for(let c=0;c<GRID_COLS;c++){
-      const key = `${c},${r}`; if(seen.has(key)) continue;
       const origin = grid[r][c]; if(!origin) continue;
-      const cluster = [];
+      const localSeen = new Set();
+      let count = 0;
       const stack = [[c,r]];
       while(stack.length){
         const [x,y] = stack.pop();
-        const k = `${x},${y}`; if(seen.has(k)) continue; seen.add(k);
+        const k = `${x},${y}`; if(localSeen.has(k)) continue; localSeen.add(k);
         const it = grid[y][x];
         if(it && it.type===origin.type){
-          cluster.push([x,y]);
-          for(const nb of neighbors(x,y)){
-            const nk = `${nb[0]},${nb[1]}`; if(!seen.has(nk)) stack.push(nb);
+          count++;
+          for(const [nx,ny] of neighbors(x,y)){
+            const nk = `${nx},${ny}`; if(!localSeen.has(nk)) stack.push([nx,ny]);
           }
         }
       }
-      if(cluster.length>=threshold) return true;
+      if(count>=threshold) return true;
     }
   }
   return false;
@@ -295,7 +295,8 @@ function applyGravity(){
     }
     for(let fill=write; fill>=0; fill--){ any = true; grid[fill][c] = createRandomItem(); }
   }
-  ensurePlayableMove();
+  // Defer the no-move check until falling animations settle
+  pendingMoveCheck = true;
   return any;
 }
 
@@ -512,6 +513,12 @@ function drawGrid(dt){
 
   drawPopAnimations(dt);
   drawParticles(dt);
+
+  // When no more falling animations and a move check is pending, validate moves
+  if(pendingMoveCheck && falling.length===0 && popAnimations.length===0){
+    pendingMoveCheck = false;
+    ensurePlayableMove(false);
+  }
 }
 
 // Resize: maintain integer scaling for crisp pixels
