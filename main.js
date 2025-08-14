@@ -53,6 +53,7 @@ const TYPE_TO_EMOJI = {
 const popAnimations = []; // {cells:[{c,r,type,color}], t}
 const falling = []; // track falling items animations
 const particles = []; // {x,y, vx,vy, life, color, char}
+const crackAnimations = []; // ice crack animations: {c,r,t,d}
 
 // Offscreen caches for pixel art
 const spriteCache = new Map(); // key -> canvas
@@ -172,7 +173,7 @@ function playChime(){ if(!soundOn) return; ensureAudio();
   const t0 = audioCtx.currentTime;
   const osc = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
-  osc.type = "triangle"; osc.frequency.value = 760;
+  osc.type = "triangle"; osc.frequency.value = 760; 
   gain.gain.setValueAtTime(0.0001, t0);
   gain.gain.exponentialRampToValueAtTime(0.2, t0+0.01);
   gain.gain.exponentialRampToValueAtTime(0.0001, t0+0.25);
@@ -404,6 +405,7 @@ function damageFrozenAround(cells){
       if(hits.has(key)) continue; hits.add(key);
       if(frozen[y] && typeof frozen[y][x] === 'number' && frozen[y][x] > 0){
         frozen[y][x] = Math.max(0, frozen[y][x]-1);
+        crackAnimations.push({ c:x, r:y, t:0, d:0.45 });
       }
     }
   }
@@ -427,12 +429,21 @@ function handleClick(ev){
   // Candy burst power-up
   if(clicked && clicked.type === 'burst'){
     playPop();
-    // burst 6 random distinct cells on the board (ignores match rules)
+    // burst 6 cells including the clicked one to avoid leaving a hole
     const all = [];
     for(let rr=0;rr<GRID_ROWS;rr++) for(let cc=0;cc<GRID_COLS;cc++) if(grid[rr][cc]) all.push([cc,rr]);
+    // shuffle
     for(let i=all.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [all[i],all[j]]=[all[j],all[i]]; }
-    const take = all.slice(0, Math.min(6, all.length));
-    const burstCells = take.map(([cc,rr])=>({c:cc,r:rr,type:grid[rr][cc].type,color:grid[rr][cc].color}));
+    const selected = new Set([`${c},${r}`]);
+    const burstList = [[c,r]];
+    for(const [cc,rr] of all){
+      if(burstList.length>=6) break;
+      const k = `${cc},${rr}`;
+      if(selected.has(k)) continue;
+      selected.add(k);
+      burstList.push([cc,rr]);
+    }
+    const burstCells = burstList.map(([cc,rr])=>({c:cc,r:rr,type:grid[rr][cc].type,color:grid[rr][cc].color}));
     spawnParticles(burstCells);
     spawnPopAnimation(burstCells);
     damageFrozenAround(burstCells);
@@ -441,8 +452,6 @@ function handleClick(ev){
     applyGravity();
     const moves = computeFalls(before);
     falling.length = 0; falling.push(...moves);
-    // remove the consumed burst itself if still present
-    grid[r][c] = null;
     return;
   }
   const cluster = findCluster(c,r);
@@ -595,22 +604,51 @@ function drawGrid(dt){
       if(frozen[r] && frozen[r][c] > 0){
         const rx = c*CELL_PX, ry = r*CELL_PX;
         ctx.save();
-        ctx.globalAlpha = 0.6;
-        ctx.fillStyle = "#bcdcff";
+        // frosty glass with strong border to separate
+        const radius = 7;
         const p = new Path2D();
-        p.roundRect(rx+1, ry+1, CELL_PX-2, CELL_PX-2, 6);
+        p.roundRect(rx+1, ry+1, CELL_PX-2, CELL_PX-2, radius);
+        // base tint
+        const grad = ctx.createLinearGradient(rx, ry, rx, ry+CELL_PX);
+        grad.addColorStop(0, 'rgba(190, 230, 255, 0.75)');
+        grad.addColorStop(1, 'rgba(150, 200, 245, 0.85)');
+        ctx.fillStyle = grad;
         ctx.fill(p);
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 1;
+        // inner highlight and outer border
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 2;
         ctx.stroke(p);
-        // cracks based on remaining hits
-        ctx.strokeStyle = "#8fb6e6";
-        if(frozen[r][c] >= 1){ ctx.beginPath(); ctx.moveTo(rx+4, ry+4); ctx.lineTo(rx+CELL_PX-4, ry+CELL_PX-6); ctx.stroke(); }
-        if(frozen[r][c] >= 2){ ctx.beginPath(); ctx.moveTo(rx+CELL_PX-6, ry+5); ctx.lineTo(rx+6, ry+CELL_PX-5); ctx.stroke(); }
+        ctx.strokeStyle = 'rgba(120,160,220,0.9)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(rx+0.5, ry+0.5, CELL_PX-1, CELL_PX-1);
+        // frost sparkle dots
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        for(let i=0;i<4;i++) ctx.fillRect(rx+4+i*4, ry+3+(i%2)*5, 1, 1);
+        ctx.globalAlpha = 1;
         ctx.restore();
       }
     }
+  }
+
+  // ice crack animations overlay
+  for(let i=crackAnimations.length-1;i>=0;i--){
+    const a = crackAnimations[i]; a.t += dt; const p = Math.min(1, a.t/a.d);
+    const rx = a.c*CELL_PX, ry = a.r*CELL_PX;
+    ctx.save();
+    ctx.globalAlpha = 0.8*(1-p);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    // radial crack effect
+    const cx = rx + CELL_PX/2, cy = ry + CELL_PX/2;
+    const rays = 6;
+    for(let k=0;k<rays;k++){
+      const ang = (Math.PI*2 * k)/rays + 0.2*Math.sin(performance.now()/200 + k);
+      const len = 4 + p*(CELL_PX/2 - 4);
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(ang)*len, cy + Math.sin(ang)*len); ctx.stroke();
+    }
+    ctx.restore();
+    if(p>=1) crackAnimations.splice(i,1);
   }
 
   drawPopAnimations(dt);
