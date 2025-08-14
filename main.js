@@ -239,7 +239,8 @@ function neighbors(c, r){
 
 function findCluster(c, r){
   const origin = grid[r][c];
-  if(!origin) return [];
+  // Frozen tiles should not initiate or join clusters
+  if(!origin || (frozen[r] && frozen[r][c] > 0)) return [];
   const tgtType = origin.type; // match by type; different flavors (colors) still count
   const seen = new Set();
   const stack = [[c,r]];
@@ -250,7 +251,8 @@ function findCluster(c, r){
     if(seen.has(key)) continue;
     seen.add(key);
     const item = grid[y][x];
-    if(item && item.type===tgtType){
+    // exclude frozen tiles from cluster membership and traversal
+    if(item && item.type===tgtType && !(frozen[y] && frozen[y][x] > 0)){
       cells.push({c:x, r:y, type:item.type, color:item.color});
       for(const nb of neighbors(x,y)) stack.push(nb);
     }
@@ -262,6 +264,8 @@ function hasAnyCluster(threshold = minMatch){
   for(let r=0;r<GRID_ROWS;r++){
     for(let c=0;c<GRID_COLS;c++){
       const origin = grid[r][c]; if(!origin) continue;
+      // do not consider frozen tiles as starting points
+      if(frozen[r] && frozen[r][c] > 0) continue;
       const localSeen = new Set();
       let count = 0;
       const stack = [[c,r]];
@@ -269,7 +273,8 @@ function hasAnyCluster(threshold = minMatch){
         const [x,y] = stack.pop();
         const k = `${x},${y}`; if(localSeen.has(k)) continue; localSeen.add(k);
         const it = grid[y][x];
-        if(it && it.type===origin.type){
+        // only count/traverse non-frozen tiles
+        if(it && it.type===origin.type && !(frozen[y] && frozen[y][x] > 0)){
           count++;
           for(const [nx,ny] of neighbors(x,y)){
             const nk = `${nx},${ny}`; if(!localSeen.has(nk)) stack.push([nx,ny]);
@@ -405,10 +410,27 @@ function damageFrozenAround(cells){
       if(hits.has(key)) continue; hits.add(key);
       if(frozen[y] && typeof frozen[y][x] === 'number' && frozen[y][x] > 0){
         frozen[y][x] = Math.max(0, frozen[y][x]-1);
-        crackAnimations.push({ c:x, r:y, t:0, d:0.45 });
+        // crack animation with shards radiating outward
+        crackAnimations.push({ c:x, r:y, t:0, d:0.45, shards: generateCrackShards(x, y) });
       }
     }
   }
+}
+
+// Generate wedge shards for an ice-crack effect
+function generateCrackShards(c, r){
+  const cx = c*CELL_PX + CELL_PX/2;
+  const cy = r*CELL_PX + CELL_PX/2;
+  const count = 7;
+  const shards = [];
+  for(let k=0;k<count;k++){
+    const angle = (Math.PI*2*k)/count + rand(-0.2, 0.2);
+    const spread = rand(0.15, 0.3);
+    const inner = 3 + rand(-1,1);
+    const outer = CELL_PX/2 - 2 + rand(-2,2);
+    shards.push({ angle, spread, inner, outer });
+  }
+  return { cx, cy, shards };
 }
 
 // Interaction
@@ -604,51 +626,84 @@ function drawGrid(dt){
       if(frozen[r] && frozen[r][c] > 0){
         const rx = c*CELL_PX, ry = r*CELL_PX;
         ctx.save();
-        // frosty glass with strong border to separate
+        // frosty glass with clearer differentiation
         const radius = 7;
         const p = new Path2D();
         p.roundRect(rx+1, ry+1, CELL_PX-2, CELL_PX-2, radius);
-        // base tint
+        // stronger icy tint
         const grad = ctx.createLinearGradient(rx, ry, rx, ry+CELL_PX);
-        grad.addColorStop(0, 'rgba(190, 230, 255, 0.75)');
-        grad.addColorStop(1, 'rgba(150, 200, 245, 0.85)');
+        grad.addColorStop(0, 'rgba(170, 215, 255, 0.85)');
+        grad.addColorStop(1, 'rgba(130, 180, 240, 0.92)');
         ctx.fillStyle = grad;
         ctx.fill(p);
         // inner highlight and outer border
-        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.98)';
         ctx.lineWidth = 2;
         ctx.stroke(p);
-        ctx.strokeStyle = 'rgba(120,160,220,0.9)';
+        ctx.strokeStyle = 'rgba(80,120,200,0.95)';
         ctx.lineWidth = 1;
         ctx.strokeRect(rx+0.5, ry+0.5, CELL_PX-1, CELL_PX-1);
-        // frost sparkle dots
-        ctx.globalAlpha = 0.5;
-        ctx.fillStyle = 'rgba(255,255,255,0.8)';
-        for(let i=0;i<4;i++) ctx.fillRect(rx+4+i*4, ry+3+(i%2)*5, 1, 1);
+        // sparkle dots
+        ctx.globalAlpha = 0.55;
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        for(let i=0;i<5;i++) ctx.fillRect(rx+3+i*4, ry+3+(i%2)*5, 1, 1);
         ctx.globalAlpha = 1;
+        // badge: snowflake + hits left
+        const hitsLeft = frozen[r][c];
+        ctx.font = `${Math.floor(CELL_PX*0.38)}px 'Segoe UI Emoji', system-ui`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.fillText('❄', rx + 4, ry + 3);
+        ctx.font = `${Math.floor(CELL_PX*0.34)}px system-ui, sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.strokeStyle = 'rgba(60,110,190,0.9)';
+        ctx.lineWidth = 3;
+        const label = `x${hitsLeft}`;
+        ctx.strokeText(label, rx + CELL_PX - 3, ry + 3);
+        ctx.fillText(label, rx + CELL_PX - 3, ry + 3);
+        // faint static cracks when nearly broken
+        if(hitsLeft === 1){
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(rx + 4, ry + CELL_PX/2);
+          ctx.lineTo(rx + CELL_PX - 6, ry + 6);
+          ctx.moveTo(rx + 6, ry + 6);
+          ctx.lineTo(rx + CELL_PX - 5, ry + CELL_PX - 6);
+          ctx.stroke();
+        }
         ctx.restore();
       }
     }
   }
 
-  // ice crack animations overlay
+  // ice crack animations overlay (radiating shards)
   for(let i=crackAnimations.length-1;i>=0;i--){
-    const a = crackAnimations[i]; a.t += dt; const p = Math.min(1, a.t/a.d);
+    const a = crackAnimations[i]; a.t += dt; const prog = Math.min(1, a.t/a.d);
     const rx = a.c*CELL_PX, ry = a.r*CELL_PX;
     ctx.save();
-    ctx.globalAlpha = 0.8*(1-p);
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2;
-    // radial crack effect
-    const cx = rx + CELL_PX/2, cy = ry + CELL_PX/2;
-    const rays = 6;
-    for(let k=0;k<rays;k++){
-      const ang = (Math.PI*2 * k)/rays + 0.2*Math.sin(performance.now()/200 + k);
-      const len = 4 + p*(CELL_PX/2 - 4);
-      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(ang)*len, cy + Math.sin(ang)*len); ctx.stroke();
+    ctx.translate(rx, ry);
+    if(a.shards){
+      const cx = CELL_PX/2, cy = CELL_PX/2;
+      for(const s of a.shards.shards){
+        const out = s.inner + (s.outer - s.inner) * prog;
+        const a1 = s.angle - s.spread/2;
+        const a2 = s.angle + s.spread/2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(a1)*out, cy + Math.sin(a1)*out);
+        ctx.lineTo(cx + Math.cos(a2)*out, cy + Math.sin(a2)*out);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(255,255,255,0.22)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
     }
     ctx.restore();
-    if(p>=1) crackAnimations.splice(i,1);
+    if(prog>=1) crackAnimations.splice(i,1);
   }
 
   drawPopAnimations(dt);
