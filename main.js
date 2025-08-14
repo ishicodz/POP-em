@@ -630,10 +630,10 @@ function drawGrid(dt){
         const radius = 7;
         const p = new Path2D();
         p.roundRect(rx+1, ry+1, CELL_PX-2, CELL_PX-2, radius);
-        // stronger icy tint
+        // lighter icy tint so item beneath is visible
         const grad = ctx.createLinearGradient(rx, ry, rx, ry+CELL_PX);
-        grad.addColorStop(0, 'rgba(170, 215, 255, 0.85)');
-        grad.addColorStop(1, 'rgba(130, 180, 240, 0.92)');
+        grad.addColorStop(0, 'rgba(170, 215, 255, 0.55)');
+        grad.addColorStop(1, 'rgba(130, 180, 240, 0.65)');
         ctx.fillStyle = grad;
         ctx.fill(p);
         // inner highlight and outer border
@@ -643,25 +643,18 @@ function drawGrid(dt){
         ctx.strokeStyle = 'rgba(80,120,200,0.95)';
         ctx.lineWidth = 1;
         ctx.strokeRect(rx+0.5, ry+0.5, CELL_PX-1, CELL_PX-1);
-        // sparkle dots
-        ctx.globalAlpha = 0.55;
+        // sparkle dots (slightly lighter)
+        ctx.globalAlpha = 0.4;
         ctx.fillStyle = 'rgba(255,255,255,0.9)';
         for(let i=0;i<5;i++) ctx.fillRect(rx+3+i*4, ry+3+(i%2)*5, 1, 1);
         ctx.globalAlpha = 1;
-        // badge: snowflake + hits left
+        // badge: snowflake only (no numbering)
         const hitsLeft = frozen[r][c];
         ctx.font = `${Math.floor(CELL_PX*0.38)}px 'Segoe UI Emoji', system-ui`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
         ctx.fillStyle = 'rgba(255,255,255,0.95)';
         ctx.fillText('❄', rx + 4, ry + 3);
-        ctx.font = `${Math.floor(CELL_PX*0.34)}px system-ui, sans-serif`;
-        ctx.textAlign = 'right';
-        ctx.strokeStyle = 'rgba(60,110,190,0.9)';
-        ctx.lineWidth = 3;
-        const label = `x${hitsLeft}`;
-        ctx.strokeText(label, rx + CELL_PX - 3, ry + 3);
-        ctx.fillText(label, rx + CELL_PX - 3, ry + 3);
         // faint static cracks when nearly broken
         if(hitsLeft === 1){
           ctx.strokeStyle = 'rgba(255,255,255,0.9)';
