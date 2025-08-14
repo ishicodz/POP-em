@@ -14,6 +14,7 @@ const CANVAS_HEIGHT = GRID_ROWS * CELL_PX;
 let canvas, ctx;
 let ui = { scoreEl: null, resetBtn: null, soundBtn: null, levelNum: null, targetScore: null, progressFill: null, overlay: null, overlayLevel: null, nextLevelBtn: null, overlayTitle: null, overlaySub: null, restartBtn: null };
 let grid = [];
+let frozen = []; // same dims as grid; value is integer hits remaining, e.g., 2
 let score = 0;
 let soundOn = true;
 let level = 1;
@@ -45,6 +46,7 @@ const TYPE_TO_EMOJI = {
   croissant: "🥐",
   pudding: "🍮",
   boba: "🧋",
+  burst: "🍫",
 };
 
 // Animation queues
@@ -199,12 +201,30 @@ function createRandomItem(){
   return { type, color: col, wiggle: 0 };
 }
 
+function spawnCandyBurstPowerup(){
+  // Spawn a burst in a random non-frozen cell near the top rows
+  const candidates = [];
+  for(let r=0;r<Math.min(5, GRID_ROWS); r++){
+    for(let c=0;c<GRID_COLS;c++){
+      if(grid[r][c] && (!frozen[r] || frozen[r][c]===0)) candidates.push([c,r]);
+    }
+  }
+  if(candidates.length===0) return;
+  const [c,r] = candidates[randi(0, candidates.length)];
+  grid[r][c] = { type: 'burst', color: '#f7b2d9', wiggle: 0 };
+}
+
 function initGrid(){
   grid = new Array(GRID_ROWS);
+  frozen = new Array(GRID_ROWS);
   for(let r=0;r<GRID_ROWS;r++){
     grid[r] = new Array(GRID_COLS);
+    frozen[r] = new Array(GRID_COLS);
     for(let c=0;c<GRID_COLS;c++){
       grid[r][c] = createRandomItem();
+      // introduce some frozen tiles occasionally (rarity scales with level)
+      const chance = Math.min(0.06 + level*0.01, 0.12);
+      frozen[r][c] = Math.random() < chance ? 2 : 0; // needs 2 nearby matches to break
     }
   }
   ensurePlayableMove(true);
@@ -278,22 +298,46 @@ function ensurePlayableMove(isInitial = false){
 
 function clearCells(cells){
   for(const {c,r} of cells){
-    grid[r][c] = null;
+    // If frozen remains, don't clear yet; require breaking first
+    if(frozen[r] && frozen[r][c] > 0){
+      // leave the item intact but reduce one extra as safety
+      frozen[r][c] = Math.max(0, frozen[r][c]-1);
+    } else {
+      grid[r][c] = null;
+    }
   }
 }
 
 function applyGravity(){
   let any = false;
   for(let c=0;c<GRID_COLS;c++){
-    let write = GRID_ROWS - 1;
-    for(let r=GRID_ROWS-1;r>=0;r--){
-      const item = grid[r][c];
-      if(item){
-        if(r!==write){ any = true; grid[write][c] = item; grid[r][c] = null; }
+    let segEnd = GRID_ROWS - 1;
+    while(segEnd >= 0){
+      // find the nearest frozen barrier at or below segEnd
+      let segStart = segEnd;
+      while(segStart >= 0 && !(frozen[segStart] && frozen[segStart][c] > 0)){
+        segStart--;
+      }
+      // open segment is (segStart, segEnd]
+      const collected = [];
+      for(let r=segEnd; r>segStart; r--){
+        if(grid[r][c]){ collected.push(grid[r][c]); }
+      }
+      // pack to bottom of segment
+      let write = segEnd;
+      for(const it of collected){
+        if(grid[write][c] !== it){ any = true; }
+        grid[write][c] = it;
         write--;
       }
+      // fill remaining open cells in this segment
+      for(let r=write; r>segStart; r--){
+        grid[r][c] = createRandomItem();
+        any = true;
+      }
+      // move to above the frozen barrier just found
+      segEnd = segStart - 1;
     }
-    for(let fill=write; fill>=0; fill--){ any = true; grid[fill][c] = createRandomItem(); }
   }
   // Defer the no-move check until falling animations settle
   pendingMoveCheck = true;
@@ -350,6 +394,21 @@ function spawnPopAnimation(cells){
   popAnimations.push({ cells, t: 0 });
 }
 
+function damageFrozenAround(cells){
+  // For each popped cell, reduce frozen armor on neighbors and itself
+  const hits = new Set();
+  for(const {c,r} of cells){
+    for(const [x,y] of [[c,r],...neighbors(c,r)]){
+      if(!inBounds(x,y)) continue;
+      const key = `${x},${y}`;
+      if(hits.has(key)) continue; hits.add(key);
+      if(frozen[y] && typeof frozen[y][x] === 'number' && frozen[y][x] > 0){
+        frozen[y][x] = Math.max(0, frozen[y][x]-1);
+      }
+    }
+  }
+}
+
 // Interaction
 function toCell(px, py){
   const rect = canvas.getBoundingClientRect();
@@ -364,11 +423,34 @@ function handleClick(ev){
   if(interactionsLocked) return;
   const {c,r} = toCell(ev.clientX, ev.clientY);
   if(!inBounds(c,r)) return;
+  const clicked = grid[r][c];
+  // Candy burst power-up
+  if(clicked && clicked.type === 'burst'){
+    playPop();
+    // burst 6 random distinct cells on the board (ignores match rules)
+    const all = [];
+    for(let rr=0;rr<GRID_ROWS;rr++) for(let cc=0;cc<GRID_COLS;cc++) if(grid[rr][cc]) all.push([cc,rr]);
+    for(let i=all.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [all[i],all[j]]=[all[j],all[i]]; }
+    const take = all.slice(0, Math.min(6, all.length));
+    const burstCells = take.map(([cc,rr])=>({c:cc,r:rr,type:grid[rr][cc].type,color:grid[rr][cc].color}));
+    spawnParticles(burstCells);
+    spawnPopAnimation(burstCells);
+    damageFrozenAround(burstCells);
+    clearCells(burstCells);
+    const before = snapshotGrid();
+    applyGravity();
+    const moves = computeFalls(before);
+    falling.length = 0; falling.push(...moves);
+    // remove the consumed burst itself if still present
+    grid[r][c] = null;
+    return;
+  }
   const cluster = findCluster(c,r);
   if(cluster.length>=minMatch){
     playPop();
     spawnParticles(cluster);
     spawnPopAnimation(cluster);
+    damageFrozenAround(cluster);
     clearCells(cluster);
     const gained = cluster.length * 10;
     score += gained;
@@ -427,16 +509,17 @@ function drawItem(item, x, y, dt){
     const r = 6;
     const path = new Path2D();
     path.roundRect(rx+2, ry+2, CELL_PX-4, CELL_PX-6, r);
-    ctx.fillStyle = item.color;
+    ctx.fillStyle = item.type==='burst' ? '#ffcc66' : item.color;
     ctx.fill(path);
-    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.strokeStyle = item.type==='burst' ? '#ff9f1a' : "rgba(255,255,255,0.7)";
     ctx.lineWidth = 1;
     ctx.stroke(path);
     // emoji glyph
     ctx.font = `${Math.floor(CELL_PX*0.9)}px 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(TYPE_TO_EMOJI[item.type], rx + CELL_PX/2, ry + CELL_PX/2);
+    const glyph = TYPE_TO_EMOJI[item.type] || '🍬';
+    ctx.fillText(glyph, rx + CELL_PX/2, ry + CELL_PX/2);
     ctx.restore();
   } else {
     const sp = getItemSprite(item.type, item.color);
@@ -508,6 +591,25 @@ function drawGrid(dt){
       if(!item) continue;
       // skip those currently drawn as falling duplicates (visual is fine since falling anim draws over)
       drawItem(item, c*CELL_PX, r*CELL_PX, dt);
+      // draw frozen overlay if any
+      if(frozen[r] && frozen[r][c] > 0){
+        const rx = c*CELL_PX, ry = r*CELL_PX;
+        ctx.save();
+        ctx.globalAlpha = 0.6;
+        ctx.fillStyle = "#bcdcff";
+        const p = new Path2D();
+        p.roundRect(rx+1, ry+1, CELL_PX-2, CELL_PX-2, 6);
+        ctx.fill(p);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1;
+        ctx.stroke(p);
+        // cracks based on remaining hits
+        ctx.strokeStyle = "#8fb6e6";
+        if(frozen[r][c] >= 1){ ctx.beginPath(); ctx.moveTo(rx+4, ry+4); ctx.lineTo(rx+CELL_PX-4, ry+CELL_PX-6); ctx.stroke(); }
+        if(frozen[r][c] >= 2){ ctx.beginPath(); ctx.moveTo(rx+CELL_PX-6, ry+5); ctx.lineTo(rx+6, ry+CELL_PX-5); ctx.stroke(); }
+        ctx.restore();
+      }
     }
   }
 
@@ -588,6 +690,8 @@ function nextLevel(){
   ui.targetScore.textContent = formatScore(scoreTarget);
   updateProgress(true);
   initGrid();
+  // Chance to spawn a burst power-up at the start of a level
+  if(level % 2 === 0) spawnCandyBurstPowerup();
   interactionsLocked = false;
 }
 
